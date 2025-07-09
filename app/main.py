@@ -6,6 +6,12 @@ from app.core.config import settings
 from app.core.errors import setup_exception_handlers
 from app.core.cache import cache_manager
 from app.core.middleware import setup_middleware
+from app.core.openapi import setup_openapi_enhancements
+from app.core.interactive_docs import setup_interactive_docs
+from app.core.validation import create_validation_error_response, get_validation_metrics
+from app.core.logging_config import configure_logging, LogLevel
+from app.core.error_handlers import setup_error_handlers
+from app.core.monitoring_alerts import setup_error_alert_integration
 from app.db.session import engine
 from app.db.base import Base
 
@@ -39,8 +45,26 @@ from app.modules.system import routes as system_routes
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
+    print("🚀 Starting Rental Management System API...")
+    
+    # Configure logging
+    configure_logging(
+        log_level=LogLevel.INFO,
+        enable_console=True,
+        enable_file=True,
+        enable_json=True,
+        enable_rotation=True
+    )
+    print("✅ Logging system configured")
+    
+    # Setup error alert integration
+    setup_error_alert_integration()
+    print("✅ Error alerting system configured")
+    
+    # Database initialization
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    print("✅ Database initialized")
     
     # Initialize cache
     if settings.REDIS_ENABLED:
@@ -58,12 +82,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Database optimization failed: {e}")
     
+    print("🎉 Rental Management System API started successfully!")
+    
     yield
     
     # Shutdown
+    print("🔄 Shutting down Rental Management System API...")
     await engine.dispose()
     if settings.REDIS_ENABLED:
         await cache_manager.disconnect()
+    print("✅ Shutdown complete")
 
 
 app = FastAPI(
@@ -195,6 +223,12 @@ setup_middleware(app)
 # Set up exception handlers
 setup_exception_handlers(app)
 
+# Set up OpenAPI enhancements
+setup_openapi_enhancements(app)
+
+# Set up interactive documentation
+setup_interactive_docs(app)
+
 # Include API routes
 # Authentication
 app.include_router(auth_routes.router, prefix="/api/v1", tags=["Authentication"])
@@ -274,34 +308,54 @@ async def metrics():
     """Performance metrics endpoint."""
     from app.core.middleware import get_performance_metrics, get_slow_requests
     from app.core.database_optimization import get_database_performance_metrics
+    from datetime import datetime
+    from fastapi.responses import JSONResponse
     
-    metrics_data = {"timestamp": "2024-01-01T00:00:00Z"}  # Would be actual timestamp
-    
-    # Get cache and request metrics
-    if settings.REDIS_ENABLED:
-        try:
-            performance_metrics = await get_performance_metrics()
-            slow_requests = await get_slow_requests(limit=5)
-            cache_stats = await cache_manager.get_health()
-            
-            metrics_data.update({
-                "performance": performance_metrics,
-                "slow_requests": slow_requests,
-                "cache": cache_stats
-            })
-        except Exception as e:
-            metrics_data["cache_error"] = str(e)
-    else:
-        metrics_data["cache"] = {"status": "disabled"}
-    
-    # Get database metrics
     try:
-        db_metrics = await get_database_performance_metrics()
-        metrics_data["database"] = db_metrics
+        metrics_data = {"timestamp": datetime.utcnow().isoformat() + "Z"}
+        
+        # Get cache and request metrics
+        if settings.REDIS_ENABLED:
+            try:
+                performance_metrics = await get_performance_metrics()
+                slow_requests = await get_slow_requests(limit=5)
+                cache_stats = await cache_manager.get_health()
+                
+                metrics_data.update({
+                    "performance": performance_metrics,
+                    "slow_requests": slow_requests,
+                    "cache": cache_stats
+                })
+            except Exception as e:
+                metrics_data["cache_error"] = str(e)
+        else:
+            metrics_data["cache"] = {"status": "disabled"}
+        
+        # Get database metrics
+        try:
+            db_metrics = await get_database_performance_metrics()
+            metrics_data["database"] = db_metrics
+        except Exception as e:
+            metrics_data["database_error"] = str(e)
+        
+        return JSONResponse(
+            content=metrics_data,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Content-Type": "application/json"
+            }
+        )
     except Exception as e:
-        metrics_data["database_error"] = str(e)
-    
-    return metrics_data
+        return JSONResponse(
+            content={"error": "Failed to generate metrics", "detail": str(e)},
+            status_code=500,
+            headers={
+                "Cache-Control": "no-cache",
+                "Content-Type": "application/json"
+            }
+        )
 
 
 @app.get("/prometheus")
@@ -309,3 +363,56 @@ async def prometheus_metrics():
     """Prometheus metrics endpoint."""
     from app.core.prometheus_metrics import get_prometheus_metrics
     return await get_prometheus_metrics()
+
+
+@app.get("/api-validation-metrics")
+async def validation_metrics():
+    """API validation metrics endpoint."""
+    return {
+        "validation_metrics": get_validation_metrics(),
+        "description": "API request validation statistics",
+        "timestamp": "2024-01-01T12:00:00Z"
+    }
+
+
+@app.get("/api-documentation-info")
+async def api_documentation_info():
+    """API documentation information endpoint."""
+    from app.core.api_docs import get_api_documentation_summary
+    return get_api_documentation_summary()
+
+
+@app.get("/api-status")
+async def api_status():
+    """Comprehensive API status endpoint."""
+    from app.core.api_docs import get_api_documentation_summary
+    
+    status_info = {
+        "api_status": "operational",
+        "version": "2.0.0",
+        "environment": settings.ENVIRONMENT,
+        "timestamp": "2024-01-01T12:00:00Z",
+        "features": {
+            "authentication": True,
+            "authorization": True,
+            "caching": settings.REDIS_ENABLED,
+            "rate_limiting": True,
+            "input_validation": True,
+            "api_documentation": True,
+            "interactive_docs": True,
+            "monitoring": True,
+            "error_tracking": True
+        },
+        "documentation": {
+            "openapi_spec": "/openapi.json",
+            "swagger_ui": "/docs",
+            "redoc": "/redoc",
+            "api_playground": "/api-playground",
+            "code_samples": "/code-samples",
+            "api_guide": "/api-guide"
+        },
+        "validation_metrics": get_validation_metrics(),
+        "api_summary": get_api_documentation_summary()
+    }
+    
+    return status_info
