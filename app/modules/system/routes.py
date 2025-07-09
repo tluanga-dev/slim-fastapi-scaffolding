@@ -1,11 +1,12 @@
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from app.core.errors import NotFoundError, ValidationError, ConflictError
+from app.core.rate_limit_config import RateLimitConfig, RateLimitTier
 from app.shared.dependencies import get_session
 from app.modules.system.service import SystemService
 from app.modules.system.models import (
@@ -14,6 +15,10 @@ from app.modules.system.models import (
 
 
 router = APIRouter(prefix="/system", tags=["System Management"])
+
+# Include database management routes
+from app.modules.system.database_routes import router as database_router
+router.include_router(database_router, prefix="/database", tags=["Database Management"])
 
 
 # Response models
@@ -567,3 +572,48 @@ async def get_backups_by_status(
 async def health_check():
     """Health check endpoint for system management."""
     return {"status": "healthy", "service": "system-management"}
+
+
+# Rate limit status endpoint
+@router.get("/rate-limit-status", status_code=status.HTTP_200_OK)
+async def rate_limit_status(request: Request):
+    """Get rate limiting configuration and status."""
+    config = RateLimitConfig()
+    
+    # Get request info
+    client_host = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")
+    path = request.url.path
+    
+    # Check exemptions
+    is_exempt = (
+        config.is_exempt_path(path) or
+        config.is_monitoring_agent(user_agent) or
+        config.is_exempt_ip(client_host)
+    )
+    
+    return {
+        "request_info": {
+            "client_ip": client_host,
+            "user_agent": user_agent,
+            "path": path,
+            "is_exempt": is_exempt
+        },
+        "configuration": {
+            "tier_limits": {tier.value: limit for tier, limit in config.TIER_LIMITS.items()},
+            "exempt_paths": list(config.EXEMPT_PATHS),
+            "custom_path_limits": config.CUSTOM_PATH_LIMITS,
+            "monitoring_agents": list(config.MONITORING_USER_AGENTS),
+            "exempt_ip_ranges": config.EXEMPT_IP_RANGES
+        },
+        "your_status": {
+            "would_be_rate_limited": not is_exempt,
+            "rate_limit": config.get_rate_limit(path, RateLimitTier.PUBLIC) if not is_exempt else "unlimited",
+            "reason_for_exemption": (
+                "Exempt path" if config.is_exempt_path(path) else
+                "Monitoring agent" if config.is_monitoring_agent(user_agent) else
+                "Exempt IP" if config.is_exempt_ip(client_host) else
+                None
+            )
+        }
+    }

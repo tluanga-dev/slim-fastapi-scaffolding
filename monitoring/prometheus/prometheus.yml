@@ -1,6 +1,6 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 60s
+  evaluation_interval: 60s
 
 rule_files:
   - "rules/*.yml"
@@ -17,7 +17,7 @@ scrape_configs:
     static_configs:
       - targets: ['host.docker.internal:8000']
     metrics_path: '/prometheus'
-    scrape_interval: 15s
+    scrape_interval: 60s
     scrape_timeout: 10s
 
   # Prometheus itself
@@ -45,4 +45,4 @@ scrape_configs:
     static_configs:
       - targets: ['host.docker.internal:8000']
     metrics_path: '/health'
-    scrape_interval: 30s
+    scrape_interval: 2m

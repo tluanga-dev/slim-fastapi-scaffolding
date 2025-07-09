@@ -18,6 +18,7 @@ from starlette.types import ASGIApp
 
 from app.core.config import settings
 from app.core.cache import cache_manager, CacheConfig
+from app.core.rate_limit_config import RateLimitConfig, RateLimitTier
 
 
 class CacheMiddleware(BaseHTTPMiddleware):
@@ -185,12 +186,43 @@ class PerformanceMonitoringMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limiting middleware."""
+    """Rate limiting middleware with configurable exemptions."""
     
     def __init__(self, app: ASGIApp, requests_per_minute: int = 100):
         super().__init__(app)
-        self.requests_per_minute = requests_per_minute
+        self.default_requests_per_minute = requests_per_minute
         self.rate_limit_window = 60  # seconds
+        self.config = RateLimitConfig()
+    
+    def _should_rate_limit(self, request: Request) -> bool:
+        """Check if request should be rate limited."""
+        # Check exempt paths
+        if self.config.is_exempt_path(request.url.path):
+            return False
+        
+        # Check monitoring user agents
+        user_agent = request.headers.get("user-agent", "")
+        if self.config.is_monitoring_agent(user_agent):
+            return False
+        
+        # Check exempt IP addresses
+        client_host = request.client.host if request.client else ""
+        if self.config.is_exempt_ip(client_host):
+            return False
+        
+        return True
+    
+    def _get_rate_limit(self, request: Request) -> int:
+        """Get rate limit for the request."""
+        # Check for custom path limits
+        path = request.url.path
+        
+        # Determine tier based on authentication
+        tier = RateLimitTier.PUBLIC
+        if hasattr(request.state, 'user_id') and request.state.user_id:
+            tier = RateLimitTier.AUTHENTICATED
+        
+        return self.config.get_rate_limit(path, tier)
     
     def _get_client_identifier(self, request: Request) -> str:
         """Get client identifier for rate limiting."""
@@ -209,25 +241,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Apply rate limiting."""
+        # Skip rate limiting for exempt requests
+        if not self._should_rate_limit(request):
+            return await call_next(request)
+        
         client_id = self._get_client_identifier(request)
         rate_limit_key = f"rate_limit:{client_id}"
+        
+        # Get the appropriate rate limit for this request
+        rate_limit = self._get_rate_limit(request)
         
         # Check rate limit
         current_requests = await cache_manager.increment(
             rate_limit_key, 1, self.rate_limit_window
         )
         
-        if current_requests > self.requests_per_minute:
+        if current_requests > rate_limit:
             # Rate limit exceeded
             return JSONResponse(
                 status_code=429,
                 content={
                     "error": "Rate limit exceeded",
-                    "message": f"Maximum {self.requests_per_minute} requests per minute allowed",
+                    "message": f"Maximum {rate_limit} requests per minute allowed",
                     "retry_after": self.rate_limit_window
                 },
                 headers={
-                    "X-RateLimit-Limit": str(self.requests_per_minute),
+                    "X-RateLimit-Limit": str(rate_limit),
                     "X-RateLimit-Remaining": "0",
                     "X-RateLimit-Reset": str(int(time.time() + self.rate_limit_window)),
                     "Retry-After": str(self.rate_limit_window)
@@ -238,8 +277,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         
         # Add rate limit headers
-        remaining = max(0, self.requests_per_minute - current_requests)
-        response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
+        remaining = max(0, rate_limit - current_requests)
+        response.headers["X-RateLimit-Limit"] = str(rate_limit)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-RateLimit-Reset"] = str(int(time.time() + self.rate_limit_window))
         
