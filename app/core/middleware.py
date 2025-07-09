@@ -44,7 +44,7 @@ class CacheMiddleware(BaseHTTPMiddleware):
             return False
         
         # Skip caching for certain paths
-        skip_paths = ["/health", "/metrics", "/prometheus", "/docs", "/openapi.json"]
+        skip_paths = ["/health", "/metrics", "/docs", "/openapi.json"]
         if any(request.url.path.startswith(path) for path in skip_paths):
             return False
         
@@ -302,11 +302,6 @@ class CompressionMiddleware(BaseHTTPMiddleware):
     
     def _should_compress(self, request: Request, response: Response) -> bool:
         """Determine if response should be compressed."""
-        # Skip compression for metrics endpoints
-        skip_compression_paths = ["/metrics", "/prometheus", "/health"]
-        if any(request.url.path.startswith(path) for path in skip_compression_paths):
-            return False
-        
         # Check if client accepts compression
         accept_encoding = request.headers.get("accept-encoding", "")
         if "gzip" not in accept_encoding:

@@ -343,39 +343,10 @@ class PrometheusMiddleware:
 
 async def get_prometheus_metrics() -> PlainTextResponse:
     """Generate Prometheus metrics output."""
-    try:
-        # Generate metrics data
-        metrics_data = generate_latest(registry)
-        
-        # Ensure proper encoding
-        if isinstance(metrics_data, bytes):
-            metrics_content = metrics_data.decode('utf-8')
-        else:
-            metrics_content = str(metrics_data)
-        
-        # Return PlainTextResponse with proper headers
-        return PlainTextResponse(
-            content=metrics_content,
-            status_code=200,
-            headers={
-                "Content-Type": CONTENT_TYPE_LATEST,
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-                "Content-Encoding": "identity"
-            }
-        )
-    except Exception as e:
-        # Return error response for debugging
-        error_content = f"# Error generating metrics: {str(e)}\n"
-        return PlainTextResponse(
-            content=error_content,
-            status_code=500,
-            headers={
-                "Content-Type": "text/plain; charset=utf-8",
-                "Cache-Control": "no-cache"
-            }
-        )
+    return PlainTextResponse(
+        generate_latest(registry),
+        headers={"Content-Type": CONTENT_TYPE_LATEST}
+    )
 
 
 class BusinessMetricsCollector:
