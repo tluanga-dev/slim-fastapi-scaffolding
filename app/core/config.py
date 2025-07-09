@@ -48,8 +48,13 @@ class Settings(BaseSettings):
     # CORS Settings
     BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
     
-    # Redis Settings (for caching, if needed)
-    REDIS_URL: Optional[str] = None
+    # Redis Cache Settings
+    REDIS_ENABLED: bool = True
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_DB: int = 0
+    REDIS_MAX_CONNECTIONS: int = 10
+    REDIS_TIMEOUT: int = 5
     CACHE_TTL: int = 300  # 5 minutes default
     
     # Email Settings (for notifications)

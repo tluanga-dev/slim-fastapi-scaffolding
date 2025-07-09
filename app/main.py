@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.errors import setup_exception_handlers
+from app.core.cache import cache_manager
+from app.core.middleware import setup_middleware
 from app.db.session import engine
 from app.db.base import Base
 
@@ -40,10 +42,28 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
+    # Initialize cache
+    if settings.REDIS_ENABLED:
+        try:
+            await cache_manager.connect()
+            print("✅ Redis cache connected successfully")
+        except Exception as e:
+            print(f"⚠️  Redis cache connection failed: {e}")
+    
+    # Initialize database optimizations
+    try:
+        from app.core.database_optimization import initialize_database_optimizations
+        await initialize_database_optimizations()
+        print("✅ Database optimizations initialized")
+    except Exception as e:
+        print(f"⚠️  Database optimization failed: {e}")
+    
     yield
     
     # Shutdown
     await engine.dispose()
+    if settings.REDIS_ENABLED:
+        await cache_manager.disconnect()
 
 
 app = FastAPI(
@@ -169,6 +189,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Set up performance and caching middleware
+setup_middleware(app)
+
 # Set up exception handlers
 setup_exception_handlers(app)
 
@@ -228,6 +251,8 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    cache_health = await cache_manager.get_health() if settings.REDIS_ENABLED else {"status": "disabled"}
+    
     return {
         "status": "healthy",
         "service": settings.APP_NAME,
@@ -239,5 +264,48 @@ async def health_check():
             "analytics", "system"
         ],
         "endpoints": 200,
-        "database": "SQLite with async SQLAlchemy"
+        "database": "SQLite with async SQLAlchemy",
+        "cache": cache_health
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Performance metrics endpoint."""
+    from app.core.middleware import get_performance_metrics, get_slow_requests
+    from app.core.database_optimization import get_database_performance_metrics
+    
+    metrics_data = {"timestamp": "2024-01-01T00:00:00Z"}  # Would be actual timestamp
+    
+    # Get cache and request metrics
+    if settings.REDIS_ENABLED:
+        try:
+            performance_metrics = await get_performance_metrics()
+            slow_requests = await get_slow_requests(limit=5)
+            cache_stats = await cache_manager.get_health()
+            
+            metrics_data.update({
+                "performance": performance_metrics,
+                "slow_requests": slow_requests,
+                "cache": cache_stats
+            })
+        except Exception as e:
+            metrics_data["cache_error"] = str(e)
+    else:
+        metrics_data["cache"] = {"status": "disabled"}
+    
+    # Get database metrics
+    try:
+        db_metrics = await get_database_performance_metrics()
+        metrics_data["database"] = db_metrics
+    except Exception as e:
+        metrics_data["database_error"] = str(e)
+    
+    return metrics_data
+
+
+@app.get("/prometheus")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    from app.core.prometheus_metrics import get_prometheus_metrics
+    return await get_prometheus_metrics()

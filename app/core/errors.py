@@ -39,6 +39,28 @@ class BusinessException(AppException):
         )
 
 
+class CacheError(AppException):
+    """Exception raised for cache-related errors."""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            details=details
+        )
+
+
+class ValidationError(AppException):
+    """Exception raised for validation errors."""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            details=details
+        )
+
+
 class NotFoundException(AppException):
     """Exception raised when a resource is not found."""
     

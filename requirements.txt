@@ -8,3 +8,11 @@ pytest
 pytest-asyncio
 httpx
 greenlet
+
+# Performance & Monitoring
+redis
+prometheus-client
+psutil
+
+# Additional async support
+aioredis
