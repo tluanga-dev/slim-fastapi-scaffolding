@@ -180,17 +180,18 @@ The system follows Domain-Driven Design (DDD) principles with clean architecture
     ],
 )
 
-# Set up CORS middleware
+# Set up performance and caching middleware first
+setup_middleware(app)
+
+# Set up CORS middleware last (so it's executed first)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Allow browser to access all headers
 )
-
-# Set up performance and caching middleware
-setup_middleware(app)
 
 # Set up exception handlers
 setup_exception_handlers(app)

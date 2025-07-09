@@ -17,8 +17,9 @@ from app.modules.system.models import (
 router = APIRouter(prefix="/system", tags=["System Management"])
 
 # Include database management routes
-from app.modules.system.database_routes import router as database_router
-router.include_router(database_router, prefix="/database", tags=["Database Management"])
+# TODO: Uncomment when database_routes.py is implemented
+# from app.modules.system.database_routes import router as database_router
+# router.include_router(database_router, prefix="/database", tags=["Database Management"])
 
 
 # Response models

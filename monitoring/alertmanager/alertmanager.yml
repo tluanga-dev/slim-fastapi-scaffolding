@@ -1,38 +1,45 @@
 global:
-  smtp_smarthost: 'localhost:587'
-  smtp_from: 'alerts@yourdomain.com'
-  smtp_auth_username: 'alerts@yourdomain.com'
-  smtp_auth_password: 'your-password'
+  resolve_timeout: 5m
 
 route:
   group_by: ['alertname']
   group_wait: 10s
   group_interval: 10s
   repeat_interval: 1h
-  receiver: 'web.hook'
+  receiver: 'null'
 
 receivers:
-  - name: 'web.hook'
-    email_configs:
-      - to: 'admin@yourdomain.com'
-        subject: 'Rental Management Alert: {{ .GroupLabels.alertname }}'
-        body: |
-          {{ range .Alerts }}
-          Alert: {{ .Annotations.summary }}
-          Description: {{ .Annotations.description }}
-          Labels: {{ .Labels }}
-          {{ end }}
+  - name: 'null'
+    # This is a null receiver that doesn't send notifications anywhere
+    # When you're ready to add email notifications, uncomment and configure the section below:
+    
+    # email_configs:
+    #   - to: 'admin@yourdomain.com'
+    #     smtp_smarthost: 'smtp.gmail.com:587'
+    #     smtp_from: 'alerts@yourdomain.com'
+    #     smtp_auth_username: 'alerts@yourdomain.com'
+    #     smtp_auth_password: 'your-app-password'
+    #     headers:
+    #       subject: 'Rental Management Alert: {{ .GroupLabels.alertname }}'
+    #     html: |
+    #       {{ range .Alerts }}
+    #       <b>Alert:</b> {{ .Annotations.summary }}<br>
+    #       <b>Description:</b> {{ .Annotations.description }}<br>
+    #       <b>Labels:</b> {{ .Labels }}<br>
+    #       <hr>
+    #       {{ end }}
 
   - name: 'slack-notifications'
-    slack_configs:
-      - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
-        channel: '#alerts'
-        title: 'Rental Management System Alert'
-        text: |
-          {{ range .Alerts }}
-          Alert: {{ .Annotations.summary }}
-          Description: {{ .Annotations.description }}
-          {{ end }}
+    # When ready to use Slack, uncomment and configure:
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #     channel: '#alerts'
+    #     title: 'Rental Management System Alert'
+    #     text: |
+    #       {{ range .Alerts }}
+    #       Alert: {{ .Annotations.summary }}
+    #       Description: {{ .Annotations.description }}
+    #       {{ end }}
 
 inhibit_rules:
   - source_match:

@@ -342,17 +342,38 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "X-Frame-Options": "DENY",
             "X-XSS-Protection": "1; mode=block",
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-            "Content-Security-Policy": "default-src 'self'",
             "Referrer-Policy": "strict-origin-when-cross-origin"
         }
+    
+    def _get_csp_for_path(self, path: str) -> str:
+        """Get appropriate CSP based on the request path."""
+        # Allow external resources for documentation pages
+        if path in ["/docs", "/redoc", "/openapi.json"]:
+            return (
+                "default-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com; "
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "img-src 'self' data: https://fastapi.tiangolo.com; "
+                "connect-src 'self' http://localhost:8000 https://cdn.jsdelivr.net"
+            )
+        # Default strict CSP for all other pages
+        return "default-src 'self'"
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Add security headers to response."""
         response = await call_next(request)
         
+        # Skip security headers for documentation endpoints
+        if request.url.path in ["/docs", "/redoc", "/openapi.json"]:
+            return response
+        
         # Add security headers
         for header, value in self.security_headers.items():
             response.headers[header] = value
+        
+        # Set appropriate CSP based on path
+        response.headers["Content-Security-Policy"] = self._get_csp_for_path(request.url.path)
         
         return response
 
@@ -373,8 +394,8 @@ def setup_middleware(app):
     if settings.REDIS_ENABLED:
         app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
     
-    # Compression
-    app.add_middleware(CompressionMiddleware)
+    # Compression - DISABLED: Placeholder implementation causes ERR_CONTENT_DECODING_FAILED
+    # app.add_middleware(CompressionMiddleware)
     
     # HTTP caching (innermost - closest to business logic)
     if settings.REDIS_ENABLED:
