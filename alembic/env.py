@@ -19,8 +19,15 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from app.db.base import Base
+
 # Import all models so they are registered with Base
-from app.modules.items.models import Item
+from app.modules.master_data.brands.models import Brand
+from app.modules.master_data.categories.models import Category
+from app.modules.master_data.locations.models import Location
+from app.modules.auth.models import User, Role, Permission
+from app.modules.customers.models import Customer
+from app.modules.suppliers.models import Supplier
+
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
