@@ -23,6 +23,8 @@ from app.modules.system import models as system_models
 
 # Import routes
 from app.modules.auth import routes as auth_routes
+from app.modules.auth import rbac_routes
+from app.modules.auth import notification_routes
 from app.modules.customers import routes as customer_routes
 from app.modules.suppliers import routes as supplier_routes
 from app.modules.master_data.brands import routes as brand_routes
@@ -138,6 +140,14 @@ The system follows Domain-Driven Design (DDD) principles with clean architecture
             "description": "User authentication, registration, and authorization operations",
         },
         {
+            "name": "Enhanced RBAC",
+            "description": "Advanced role-based access control with permission dependencies and audit logging",
+        },
+        {
+            "name": "RBAC Notifications",
+            "description": "Notification system for RBAC permission expirations and alerts",
+        },
+        {
             "name": "Customer Management",
             "description": "Customer lifecycle management, profiles, and relationship tracking",
         },
@@ -198,6 +208,8 @@ setup_exception_handlers(app)
 # Include API routes
 # Authentication
 app.include_router(auth_routes.router, prefix="/api/v1", tags=["Authentication"])
+app.include_router(rbac_routes.router, prefix="/api/v1", tags=["Enhanced RBAC"])
+app.include_router(notification_routes.router, prefix="/api/v1", tags=["RBAC Notifications"])
 
 # Customer Management
 app.include_router(customer_routes.router, prefix="/api/v1", tags=["Customer Management"])

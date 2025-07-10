@@ -9,6 +9,15 @@ pytest-asyncio
 httpx
 greenlet
 
+# Database drivers
+asyncpg  # PostgreSQL async driver
+psycopg2-binary  # PostgreSQL sync driver (backup)
+
+# Authentication & Security
+python-jose[cryptography]  # JWT token handling
+passlib[bcrypt]  # Password hashing
+bcrypt  # Password hashing
+
 # Performance & Monitoring
 redis
 prometheus-client
@@ -16,3 +25,7 @@ psutil
 
 # Additional async support
 aioredis
+
+# Other dependencies
+python-multipart  # Form data parsing
+email-validator  # Email validation

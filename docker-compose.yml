@@ -11,15 +11,18 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=development
-      - DATABASE_URL=sqlite+aiosqlite:///./app.db
+      - DATABASE_URL=postgresql+asyncpg://rental_user:rental_password@postgres:5432/rental_db
+      - TEST_DATABASE_URL=postgresql+asyncpg://rental_user:rental_password@postgres:5432/rental_test_db
       - REDIS_ENABLED=true
       - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=dev-secret-key-change-in-production
       - DEBUG=true
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
-      - ./app.db:/app/app.db
       - ./logs:/app/logs
       - ./uploads:/app/uploads
     networks:
@@ -31,6 +34,30 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: rental-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=rental_db
+      - POSTGRES_USER=rental_user
+      - POSTGRES_PASSWORD=rental_password
+      - POSTGRES_MULTIPLE_EXTENSIONS=pg_stat_statements,pg_trgm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - rental-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rental_user -d rental_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # Redis Cache
   redis:
@@ -51,6 +78,8 @@ services:
       retries: 3
 
 volumes:
+  postgres_data:
+    driver: local
   redis_data:
     driver: local
 

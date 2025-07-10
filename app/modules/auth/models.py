@@ -1,12 +1,18 @@
 from enum import Enum
-from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Table, Index
+from typing import Optional, List, Set, TYPE_CHECKING
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Table, Index, Integer
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.ext.hybrid import hybrid_property
 from datetime import datetime
 import bcrypt
+from datetime import timedelta
 
 from app.db.base import BaseModel, UUIDType
+from app.modules.auth.constants import (
+    UserType, PermissionRiskLevel, RoleTemplate, PermissionCategory as PermissionCategoryEnum,
+    get_permission_risk_level, get_permission_dependencies,
+    can_user_type_manage, validate_permission_dependencies
+)
 
 if TYPE_CHECKING:
     from app.modules.master_data.locations.models import Location
@@ -21,7 +27,7 @@ class UserStatus(str, Enum):
 
 
 class UserRole(str, Enum):
-    """User role enumeration."""
+    """Legacy user role enumeration - deprecated, use Role model instead."""
     ADMIN = "ADMIN"
     MANAGER = "MANAGER"
     EMPLOYEE = "EMPLOYEE"
@@ -47,6 +53,31 @@ role_permissions_table = Table(
     Column('permission_id', UUIDType(), ForeignKey('permissions.id'), primary_key=True),
     Index('idx_role_permissions_role', 'role_id'),
     Index('idx_role_permissions_permission', 'permission_id'),
+)
+
+# Association table for user direct permissions
+user_permissions_table = Table(
+    'user_permissions',
+    BaseModel.metadata,
+    Column('user_id', UUIDType(), ForeignKey('users.id'), primary_key=True),
+    Column('permission_id', UUIDType(), ForeignKey('permissions.id'), primary_key=True),
+    Column('granted_by', UUIDType(), ForeignKey('users.id'), nullable=True),
+    Column('granted_at', DateTime, nullable=False, default=datetime.utcnow),
+    Column('expires_at', DateTime, nullable=True),
+    Index('idx_user_permissions_user', 'user_id'),
+    Index('idx_user_permissions_permission', 'permission_id'),
+    Index('idx_user_permissions_expires', 'expires_at'),
+)
+
+# Association table for role hierarchy
+role_hierarchy_table = Table(
+    'role_hierarchy',
+    BaseModel.metadata,
+    Column('parent_role_id', UUIDType(), ForeignKey('roles.id'), primary_key=True),
+    Column('child_role_id', UUIDType(), ForeignKey('roles.id'), primary_key=True),
+    Column('inherit_permissions', Boolean, nullable=False, default=True),
+    Index('idx_role_hierarchy_parent', 'parent_role_id'),
+    Index('idx_role_hierarchy_child', 'child_role_id'),
 )
 
 
@@ -79,21 +110,38 @@ class User(BaseModel):
     last_name = Column(String(100), nullable=False, comment="User's last name")
     phone_number = Column(String(20), nullable=True, comment="User's phone number")
     status = Column(String(20), nullable=False, default=UserStatus.ACTIVE.value, comment="User status")
+    user_type = Column(String(20), nullable=False, default=UserType.USER.value, comment="User type hierarchy")
     last_login = Column(DateTime, nullable=True, comment="Last login timestamp")
     failed_login_attempts = Column(String(10), nullable=False, default="0", comment="Failed login attempts")
+    account_locked_until = Column(DateTime, nullable=True, comment="Account locked until timestamp")
     password_reset_token = Column(String(255), nullable=True, comment="Password reset token")
     password_reset_expires = Column(DateTime, nullable=True, comment="Password reset token expiration")
+    email_verified = Column(Boolean, nullable=False, default=False, comment="Email verification status")
+    email_verification_token = Column(String(255), nullable=True, comment="Email verification token")
+    is_superuser = Column(Boolean, nullable=False, default=False, comment="Superuser flag")
     
     # Relationships
     roles = relationship("Role", secondary=user_roles_table, back_populates="users", lazy="select")
+    direct_permissions = relationship(
+        "Permission", 
+        secondary=user_permissions_table, 
+        primaryjoin="User.id == user_permissions.c.user_id",
+        secondaryjoin="Permission.id == user_permissions.c.permission_id",
+        lazy="select"
+    )
+    audit_logs = relationship("RBACauditlog", back_populates="user", lazy="select")
+    notification_preferences = relationship("NotificationPreference", back_populates="user", uselist=False)
+    notifications = relationship("PermissionNotification", foreign_keys="PermissionNotification.user_id", back_populates="user")
     
     # Indexes for efficient queries
     __table_args__ = (
         Index('idx_user_username', 'username'),
         Index('idx_user_email', 'email'),
         Index('idx_user_status', 'status'),
+        Index('idx_user_user_type', 'user_type'),
         Index('idx_user_last_login', 'last_login'),
-# Removed is_active index - column is inherited from BaseModel
+        Index('idx_user_superuser', 'is_superuser'),
+        Index('idx_user_email_verified', 'email_verified'),
     )
     
     def __init__(
@@ -105,6 +153,8 @@ class User(BaseModel):
         last_name: str,
         phone_number: Optional[str] = None,
         status: UserStatus = UserStatus.ACTIVE,
+        user_type: UserType = UserType.USER,
+        is_superuser: bool = False,
         **kwargs
     ):
         """
@@ -128,7 +178,10 @@ class User(BaseModel):
         self.last_name = last_name
         self.phone_number = phone_number
         self.status = status.value if isinstance(status, UserStatus) else status
+        self.user_type = user_type.value if isinstance(user_type, UserType) else user_type
         self.failed_login_attempts = "0"
+        self.is_superuser = is_superuser
+        self.email_verified = False
         self._validate()
     
     def _validate(self):
@@ -281,6 +334,16 @@ class User(BaseModel):
     
     def has_permission(self, permission_name: str) -> bool:
         """Check if user has a specific permission."""
+        # Superusers have all permissions
+        if self.is_superuser:
+            return True
+            
+        # Check direct permissions
+        for permission in self.direct_permissions:
+            if permission.name == permission_name:
+                return True
+                
+        # Check role permissions
         for role in self.roles:
             if role.has_permission(permission_name):
                 return True
@@ -289,8 +352,15 @@ class User(BaseModel):
     def get_permissions(self) -> List[str]:
         """Get all permissions for the user."""
         permissions = set()
+        
+        # Add direct permissions
+        for permission in self.direct_permissions:
+            permissions.add(permission.name)
+            
+        # Add role permissions
         for role in self.roles:
             permissions.update(role.get_permissions())
+            
         return list(permissions)
     
     def is_active_user(self) -> bool:
@@ -324,6 +394,67 @@ class User(BaseModel):
         """Get list of role names."""
         return [role.name for role in self.roles]
     
+    def get_user_type(self) -> UserType:
+        """Get user type enum."""
+        return UserType(self.user_type)
+    
+    def can_manage_user_type(self, target_type: UserType) -> bool:
+        """Check if user can manage another user type."""
+        if self.is_superuser:
+            return True
+        return can_user_type_manage(self.get_user_type(), target_type)
+    
+    def has_direct_permission(self, permission_name: str) -> bool:
+        """Check if user has a direct permission."""
+        return any(perm.name == permission_name for perm in self.direct_permissions)
+    
+    def get_direct_permissions(self) -> List[str]:
+        """Get all direct permissions for the user."""
+        return [perm.name for perm in self.direct_permissions]
+    
+    def get_role_permissions(self) -> List[str]:
+        """Get all permissions from roles."""
+        permissions = set()
+        for role in self.roles:
+            permissions.update(role.get_permissions())
+        return list(permissions)
+    
+    def is_account_locked(self) -> bool:
+        """Check if account is temporarily locked."""
+        if self.account_locked_until is None:
+            return False
+        return datetime.utcnow() < self.account_locked_until
+    
+    def set_account_lock(self, lock_duration_minutes: int = 30):
+        """Lock account for specified duration."""
+        self.account_locked_until = datetime.utcnow() + timedelta(minutes=lock_duration_minutes)
+        self.status = UserStatus.LOCKED.value
+    
+    def unlock_account_time(self):
+        """Unlock account from time-based lock."""
+        self.account_locked_until = None
+        if self.status == UserStatus.LOCKED.value:
+            self.status = UserStatus.ACTIVE.value
+    
+    def verify_email(self):
+        """Mark email as verified."""
+        self.email_verified = True
+        self.email_verification_token = None
+    
+    def set_email_verification_token(self, token: str):
+        """Set email verification token."""
+        self.email_verification_token = token
+    
+    def make_superuser(self, updated_by: Optional[str] = None):
+        """Make user a superuser."""
+        self.is_superuser = True
+        self.updated_by = updated_by
+    
+    def revoke_superuser(self, updated_by: Optional[str] = None):
+        """Revoke superuser status."""
+        self.is_superuser = False
+        self.updated_by = updated_by
+    
     def __str__(self) -> str:
         """String representation of user."""
         return self.display_name
@@ -353,16 +484,24 @@ class Role(BaseModel):
     name = Column(String(50), nullable=False, unique=True, index=True, comment="Role name")
     description = Column(Text, nullable=True, comment="Role description")
     is_system_role = Column(Boolean, nullable=False, default=False, comment="System role flag")
+    template = Column(String(50), nullable=True, comment="Role template type")
+    parent_role_id = Column(UUIDType(), ForeignKey('roles.id'), nullable=True, comment="Parent role for hierarchy")
+    can_be_deleted = Column(Boolean, nullable=False, default=True, comment="Can be deleted flag")
+    max_users = Column(Integer, nullable=True, comment="Maximum users allowed")
     
     # Relationships
     permissions = relationship("Permission", secondary=role_permissions_table, back_populates="roles", lazy="select")
     users = relationship("User", secondary=user_roles_table, back_populates="roles", lazy="select")
+    parent_role = relationship("Role", remote_side="Role.id", back_populates="child_roles")
+    child_roles = relationship("Role", back_populates="parent_role")
     
     # Indexes for efficient queries
     __table_args__ = (
         Index('idx_role_name', 'name'),
         Index('idx_role_system', 'is_system_role'),
-# Removed is_active index - column is inherited from BaseModel
+        Index('idx_role_template', 'template'),
+        Index('idx_role_parent', 'parent_role_id'),
+        Index('idx_role_can_delete', 'can_be_deleted'),
     )
     
     def __init__(
@@ -370,6 +509,10 @@ class Role(BaseModel):
         name: str,
         description: Optional[str] = None,
         is_system_role: bool = False,
+        template: Optional[RoleTemplate] = None,
+        parent_role_id: Optional[str] = None,
+        can_be_deleted: bool = True,
+        max_users: Optional[int] = None,
         **kwargs
     ):
         """
@@ -385,6 +528,10 @@ class Role(BaseModel):
         self.name = name
         self.description = description
         self.is_system_role = is_system_role
+        self.template = template.value if isinstance(template, RoleTemplate) else template
+        self.parent_role_id = parent_role_id
+        self.can_be_deleted = can_be_deleted
+        self.max_users = max_users
         self._validate()
     
     def _validate(self):
@@ -403,12 +550,28 @@ class Role(BaseModel):
         return any(perm.name == permission_name for perm in self.permissions)
     
     def get_permissions(self) -> List[str]:
-        """Get all permission names for this role."""
-        return [perm.name for perm in self.permissions]
+        """Get all permission names for this role including inherited permissions."""
+        permissions = set()
+        
+        # Add direct permissions
+        for perm in self.permissions:
+            permissions.add(perm.name)
+            
+        # Add inherited permissions from parent roles
+        if self.parent_role:
+            permissions.update(self.parent_role.get_permissions())
+            
+        return list(permissions)
     
     def can_delete(self) -> bool:
         """Check if role can be deleted."""
-        return not self.is_system_role and self.is_active and len(self.users) == 0
+        return (
+            not self.is_system_role 
+            and self.can_be_deleted 
+            and self.is_active 
+            and len(self.users) == 0
+            and len(self.child_roles) == 0
+        )
     
     @property
     def user_count(self) -> int:
@@ -417,8 +580,62 @@ class Role(BaseModel):
     
     @property
     def permission_count(self) -> int:
-        """Get number of permissions for this role."""
+        """Get number of direct permissions for this role."""
         return len(self.permissions) if self.permissions else 0
+    
+    @property
+    def total_permission_count(self) -> int:
+        """Get total number of permissions including inherited ones."""
+        return len(self.get_permissions())
+    
+    def get_template(self) -> Optional[RoleTemplate]:
+        """Get role template enum."""
+        return RoleTemplate(self.template) if self.template else None
+    
+    def has_parent(self) -> bool:
+        """Check if role has a parent role."""
+        return self.parent_role_id is not None
+    
+    def has_children(self) -> bool:
+        """Check if role has child roles."""
+        return len(self.child_roles) > 0
+    
+    def get_hierarchy_depth(self) -> int:
+        """Get the depth of this role in the hierarchy."""
+        if not self.parent_role:
+            return 0
+        return 1 + self.parent_role.get_hierarchy_depth()
+    
+    def get_all_child_roles(self) -> List['Role']:
+        """Get all child roles recursively."""
+        children = []
+        for child in self.child_roles:
+            children.append(child)
+            children.extend(child.get_all_child_roles())
+        return children
+    
+    def get_all_parent_roles(self) -> List['Role']:
+        """Get all parent roles recursively."""
+        parents = []
+        if self.parent_role:
+            parents.append(self.parent_role)
+            parents.extend(self.parent_role.get_all_parent_roles())
+        return parents
+    
+    def can_assign_to_user_count(self, additional_users: int = 1) -> bool:
+        """Check if role can be assigned to additional users."""
+        if self.max_users is None:
+            return True
+        return (self.user_count + additional_users) <= self.max_users
+    
+    def validate_permission_dependencies(self) -> List[str]:
+        """Validate that all permission dependencies are satisfied."""
+        permission_names = [perm.name for perm in self.permissions]
+        return validate_permission_dependencies(permission_names)
+    
+    def has_permission_recursive(self, permission_name: str) -> bool:
+        """Check if role has permission including inherited ones."""
+        return permission_name in self.get_permissions()
     
     def __str__(self) -> str:
         """String representation of role."""
@@ -428,7 +645,8 @@ class Role(BaseModel):
         """Developer representation of role."""
         return (
             f"Role(id={self.id}, name='{self.name}', "
-            f"system={self.is_system_role}, active={self.is_active})"
+            f"template='{self.template}', system={self.is_system_role}, "
+            f"active={self.is_active})"
         )
 
 
@@ -452,17 +670,28 @@ class Permission(BaseModel):
     resource = Column(String(50), nullable=False, comment="Resource name")
     action = Column(String(50), nullable=False, comment="Action name")
     is_system_permission = Column(Boolean, nullable=False, default=False, comment="System permission flag")
+    category_id = Column(UUIDType(), ForeignKey('permission_categories.id'), nullable=True, comment="Permission category")
+    risk_level = Column(String(20), nullable=False, default=PermissionRiskLevel.LOW.value, comment="Risk level")
+    requires_approval = Column(Boolean, nullable=False, default=False, comment="Requires approval flag")
+    code = Column(String(100), nullable=False, unique=True, index=True, comment="Permission code")
     
     # Relationships
     roles = relationship("Role", secondary=role_permissions_table, back_populates="permissions", lazy="select")
+    category = relationship("PermissionCategory", back_populates="permissions")
+    dependencies = relationship("PermissionDependency", foreign_keys="PermissionDependency.permission_id", back_populates="permission")
+    dependents = relationship("PermissionDependency", foreign_keys="PermissionDependency.depends_on_id", back_populates="depends_on")
+    notifications = relationship("PermissionNotification", back_populates="permission")
     
     # Indexes for efficient queries
     __table_args__ = (
         Index('idx_permission_name', 'name'),
+        Index('idx_permission_code', 'code'),
         Index('idx_permission_resource', 'resource'),
         Index('idx_permission_action', 'action'),
         Index('idx_permission_system', 'is_system_permission'),
-# Removed is_active index - column is inherited from BaseModel
+        Index('idx_permission_category', 'category_id'),
+        Index('idx_permission_risk_level', 'risk_level'),
+        Index('idx_permission_requires_approval', 'requires_approval'),
         Index('idx_permission_resource_action', 'resource', 'action'),
     )
     
@@ -471,8 +700,12 @@ class Permission(BaseModel):
         name: str,
         resource: str,
         action: str,
+        code: Optional[str] = None,
         description: Optional[str] = None,
         is_system_permission: bool = False,
+        category_id: Optional[str] = None,
+        risk_level: PermissionRiskLevel = PermissionRiskLevel.LOW,
+        requires_approval: bool = False,
         **kwargs
     ):
         """
@@ -490,8 +723,12 @@ class Permission(BaseModel):
         self.name = name
         self.resource = resource
         self.action = action
+        self.code = code or name  # Use name as code if not provided
         self.description = description
         self.is_system_permission = is_system_permission
+        self.category_id = category_id
+        self.risk_level = risk_level.value if isinstance(risk_level, PermissionRiskLevel) else risk_level
+        self.requires_approval = requires_approval
         self._validate()
     
     def _validate(self):
@@ -526,6 +763,38 @@ class Permission(BaseModel):
         """Get number of roles with this permission."""
         return len(self.roles) if self.roles else 0
     
+    def get_risk_level(self) -> PermissionRiskLevel:
+        """Get risk level enum."""
+        return PermissionRiskLevel(self.risk_level)
+    
+    def get_dependencies(self) -> List[str]:
+        """Get list of permission codes this permission depends on."""
+        return [dep.depends_on.code for dep in self.dependencies]
+    
+    def get_dependents(self) -> List[str]:
+        """Get list of permission codes that depend on this permission."""
+        return [dep.permission.code for dep in self.dependents]
+    
+    def is_high_risk(self) -> bool:
+        """Check if permission is high or critical risk."""
+        return self.get_risk_level() in [PermissionRiskLevel.HIGH, PermissionRiskLevel.CRITICAL]
+    
+    def is_critical_risk(self) -> bool:
+        """Check if permission is critical risk."""
+        return self.get_risk_level() == PermissionRiskLevel.CRITICAL
+    
+    def needs_approval(self) -> bool:
+        """Check if permission requires approval."""
+        return self.requires_approval or self.is_high_risk()
+    
+    def validate_dependencies(self, available_permissions: List[str]) -> List[str]:
+        """Validate that all dependencies are available."""
+        missing_deps = []
+        for dep in self.get_dependencies():
+            if dep not in available_permissions:
+                missing_deps.append(dep)
+        return missing_deps
+    
     def __str__(self) -> str:
         """String representation of permission."""
         return self.name
@@ -534,6 +803,326 @@ class Permission(BaseModel):
         """Developer representation of permission."""
         return (
             f"Permission(id={self.id}, name='{self.name}', "
-            f"resource='{self.resource}', action='{self.action}', "
-            f"system={self.is_system_permission}, active={self.is_active})"
+            f"code='{self.code}', resource='{self.resource}', action='{self.action}', "
+            f"risk='{self.risk_level}', system={self.is_system_permission}, active={self.is_active})"
+        )
+
+
+class PermissionCategory(BaseModel):
+    """Permission category model for organizing permissions."""
+    
+    __tablename__ = "permission_categories"
+    
+    code = Column(String(50), nullable=False, unique=True, index=True, comment="Category code")
+    name = Column(String(100), nullable=False, comment="Category name")
+    description = Column(Text, nullable=True, comment="Category description")
+    display_order = Column(Integer, nullable=False, default=0, comment="Display order")
+    icon = Column(String(50), nullable=True, comment="Icon name")
+    color = Column(String(20), nullable=True, comment="Display color")
+    
+    # Relationships
+    permissions = relationship("Permission", back_populates="category")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_permission_category_code', 'code'),
+        Index('idx_permission_category_name', 'name'),
+        Index('idx_permission_category_order', 'display_order'),
+    )
+    
+    def __init__(
+        self,
+        code: str,
+        name: str,
+        description: Optional[str] = None,
+        display_order: int = 0,
+        icon: Optional[str] = None,
+        color: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.code = code
+        self.name = name
+        self.description = description
+        self.display_order = display_order
+        self.icon = icon
+        self.color = color
+        self._validate()
+    
+    def _validate(self):
+        """Validate category business rules."""
+        if not self.code or not self.code.strip():
+            raise ValueError("Category code cannot be empty")
+        
+        if len(self.code) > 50:
+            raise ValueError("Category code cannot exceed 50 characters")
+        
+        if not self.name or not self.name.strip():
+            raise ValueError("Category name cannot be empty")
+        
+        if len(self.name) > 100:
+            raise ValueError("Category name cannot exceed 100 characters")
+    
+    @property
+    def permission_count(self) -> int:
+        """Get number of permissions in this category."""
+        return len(self.permissions) if self.permissions else 0
+    
+    def get_category_enum(self) -> Optional[PermissionCategoryEnum]:
+        """Get category enum from code."""
+        try:
+            return PermissionCategoryEnum(self.code)
+        except ValueError:
+            return None
+    
+    def __str__(self) -> str:
+        return self.name
+    
+    def __repr__(self) -> str:
+        return f"PermissionCategory(id={self.id}, code='{self.code}', name='{self.name}')"
+
+
+class PermissionDependency(BaseModel):
+    """Permission dependency model for defining permission prerequisites."""
+    
+    __tablename__ = "permission_dependencies"
+    
+    permission_id = Column(UUIDType(), ForeignKey('permissions.id'), nullable=False, comment="Permission ID")
+    depends_on_id = Column(UUIDType(), ForeignKey('permissions.id'), nullable=False, comment="Depends on permission ID")
+    
+    # Relationships
+    permission = relationship("Permission", foreign_keys=[permission_id], back_populates="dependencies")
+    depends_on = relationship("Permission", foreign_keys=[depends_on_id], back_populates="dependents")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_permission_deps_perm', 'permission_id'),
+        Index('idx_permission_deps_depends', 'depends_on_id'),
+    )
+    
+    def __init__(self, permission_id: str, depends_on_id: str, **kwargs):
+        super().__init__(**kwargs)
+        self.permission_id = permission_id
+        self.depends_on_id = depends_on_id
+    
+    def __repr__(self) -> str:
+        return f"PermissionDependency(permission_id={self.permission_id}, depends_on_id={self.depends_on_id})"
+
+
+class RBACauditlog(BaseModel):
+    """RBAC audit log model for tracking all authentication and authorization events."""
+    
+    __tablename__ = "rbac_audit_logs"
+    
+    user_id = Column(UUIDType(), ForeignKey('users.id'), nullable=True, comment="User ID")
+    action = Column(String(50), nullable=False, comment="Action performed")
+    entity_type = Column(String(50), nullable=False, comment="Entity type")
+    entity_id = Column(UUIDType(), nullable=True, comment="Entity ID")
+    changes = Column(Text, nullable=True, comment="Changes made (JSON)")
+    ip_address = Column(String(45), nullable=True, comment="Client IP address")
+    user_agent = Column(String(500), nullable=True, comment="Client user agent")
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, comment="Event timestamp")
+    success = Column(Boolean, nullable=False, default=True, comment="Success flag")
+    error_message = Column(Text, nullable=True, comment="Error message if failed")
+    session_id = Column(String(255), nullable=True, comment="Session ID")
+    
+    # Relationships
+    user = relationship("User", back_populates="audit_logs")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_rbac_audit_user', 'user_id'),
+        Index('idx_rbac_audit_action', 'action'),
+        Index('idx_rbac_audit_entity_type', 'entity_type'),
+        Index('idx_rbac_audit_entity_id', 'entity_id'),
+        Index('idx_rbac_audit_timestamp', 'timestamp'),
+        Index('idx_rbac_audit_success', 'success'),
+        Index('idx_rbac_audit_ip', 'ip_address'),
+    )
+    
+    def __init__(
+        self,
+        action: str,
+        entity_type: str,
+        user_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        changes: Optional[str] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        success: bool = True,
+        error_message: Optional[str] = None,
+        session_id: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.user_id = user_id
+        self.action = action
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.changes = changes
+        self.ip_address = ip_address
+        self.user_agent = user_agent
+        self.success = success
+        self.error_message = error_message
+        self.session_id = session_id
+        self.timestamp = datetime.utcnow()
+    
+    def __repr__(self) -> str:
+        return (
+            f"RBACauditlog(id={self.id}, user_id={self.user_id}, "
+            f"action='{self.action}', entity_type='{self.entity_type}', "
+            f"success={self.success}, timestamp={self.timestamp})"
+        )
+
+
+class NotificationPreference(BaseModel):
+    """
+    User notification preference model for RBAC notifications.
+    
+    Attributes:
+        user_id: User ID
+        email_enabled: Whether email notifications are enabled
+        in_app_enabled: Whether in-app notifications are enabled
+        permission_expiry_days: Days before expiry to send notifications
+        high_risk_immediate: Whether to send immediate notifications for high-risk permissions
+        digest_frequency: Frequency of digest notifications (daily, weekly, none)
+        quiet_hours_start: Start time for quiet hours
+        quiet_hours_end: End time for quiet hours
+    """
+    
+    __tablename__ = "notification_preferences"
+    
+    user_id = Column(UUIDType(), ForeignKey('users.id'), nullable=False, unique=True, comment="User ID")
+    email_enabled = Column(Boolean, nullable=False, default=True, comment="Email notifications enabled")
+    in_app_enabled = Column(Boolean, nullable=False, default=True, comment="In-app notifications enabled")
+    permission_expiry_days = Column(String(50), nullable=True, comment="Days before expiry to notify (JSON array)")
+    high_risk_immediate = Column(Boolean, nullable=False, default=True, comment="Immediate notifications for high-risk permissions")
+    digest_frequency = Column(String(20), nullable=False, default='daily', comment="Digest frequency")
+    quiet_hours_start = Column(DateTime, nullable=True, comment="Quiet hours start time")
+    quiet_hours_end = Column(DateTime, nullable=True, comment="Quiet hours end time")
+    
+    # Relationships
+    user = relationship("User", back_populates="notification_preferences")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_notification_prefs_user', 'user_id'),
+        Index('idx_notification_prefs_email', 'email_enabled'),
+        Index('idx_notification_prefs_in_app', 'in_app_enabled'),
+        Index('idx_notification_prefs_digest', 'digest_frequency'),
+    )
+    
+    def __init__(
+        self,
+        user_id: str,
+        email_enabled: bool = True,
+        in_app_enabled: bool = True,
+        permission_expiry_days: Optional[str] = None,
+        high_risk_immediate: bool = True,
+        digest_frequency: str = 'daily',
+        quiet_hours_start: Optional[datetime] = None,
+        quiet_hours_end: Optional[datetime] = None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.user_id = user_id
+        self.email_enabled = email_enabled
+        self.in_app_enabled = in_app_enabled
+        self.permission_expiry_days = permission_expiry_days
+        self.high_risk_immediate = high_risk_immediate
+        self.digest_frequency = digest_frequency
+        self.quiet_hours_start = quiet_hours_start
+        self.quiet_hours_end = quiet_hours_end
+    
+    def __repr__(self) -> str:
+        return (
+            f"NotificationPreference(id={self.id}, user_id={self.user_id}, "
+            f"email={self.email_enabled}, in_app={self.in_app_enabled}, "
+            f"digest={self.digest_frequency})"
+        )
+
+
+class PermissionNotification(BaseModel):
+    """
+    Permission notification model for tracking sent notifications.
+    
+    Attributes:
+        user_id: User ID receiving the notification
+        permission_id: Permission ID related to the notification
+        notification_type: Type of notification (e.g., PERMISSION_EXPIRING, ADMIN_ALERT)
+        channel: Notification channel (email, in_app, etc.)
+        title: Notification title
+        message: Notification message
+        content: Full notification content (JSON)
+        days_ahead: Days ahead when notification was sent
+        is_read: Whether notification has been read (for in-app notifications)
+        read_at: When notification was read
+        related_user_id: Related user ID (for admin notifications)
+    """
+    
+    __tablename__ = "permission_notifications"
+    
+    user_id = Column(UUIDType(), ForeignKey('users.id'), nullable=False, comment="User ID")
+    permission_id = Column(UUIDType(), ForeignKey('permissions.id'), nullable=False, comment="Permission ID")
+    notification_type = Column(String(50), nullable=False, comment="Notification type")
+    channel = Column(String(20), nullable=False, comment="Notification channel")
+    title = Column(String(200), nullable=True, comment="Notification title")
+    message = Column(Text, nullable=True, comment="Notification message")
+    content = Column(Text, nullable=True, comment="Full notification content (JSON)")
+    days_ahead = Column(Integer, nullable=True, comment="Days ahead when sent")
+    is_read = Column(Boolean, nullable=False, default=False, comment="Read status")
+    read_at = Column(DateTime, nullable=True, comment="Read timestamp")
+    related_user_id = Column(UUIDType(), ForeignKey('users.id'), nullable=True, comment="Related user ID")
+    
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id], back_populates="notifications")
+    permission = relationship("Permission", back_populates="notifications")
+    related_user = relationship("User", foreign_keys=[related_user_id])
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_permission_notifications_user', 'user_id'),
+        Index('idx_permission_notifications_permission', 'permission_id'),
+        Index('idx_permission_notifications_type', 'notification_type'),
+        Index('idx_permission_notifications_channel', 'channel'),
+        Index('idx_permission_notifications_read', 'is_read'),
+        Index('idx_permission_notifications_created', 'created_at'),
+        Index('idx_permission_notifications_days_ahead', 'days_ahead'),
+        Index('idx_permission_notifications_related_user', 'related_user_id'),
+    )
+    
+    def __init__(
+        self,
+        user_id: str,
+        permission_id: str,
+        notification_type: str,
+        channel: str,
+        title: Optional[str] = None,
+        message: Optional[str] = None,
+        content: Optional[str] = None,
+        days_ahead: Optional[int] = None,
+        related_user_id: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.user_id = user_id
+        self.permission_id = permission_id
+        self.notification_type = notification_type
+        self.channel = channel
+        self.title = title
+        self.message = message
+        self.content = content
+        self.days_ahead = days_ahead
+        self.related_user_id = related_user_id
+    
+    def mark_as_read(self):
+        """Mark notification as read."""
+        self.is_read = True
+        self.read_at = datetime.utcnow()
+    
+    def __repr__(self) -> str:
+        return (
+            f"PermissionNotification(id={self.id}, user_id={self.user_id}, "
+            f"permission_id={self.permission_id}, type='{self.notification_type}', "
+            f"channel='{self.channel}', read={self.is_read})"
         )

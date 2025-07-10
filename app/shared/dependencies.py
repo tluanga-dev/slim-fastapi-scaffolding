@@ -312,6 +312,18 @@ async def get_auth_repository(session: AsyncSessionDep):
     return AuthRepository(session)
 
 
+async def get_rbac_service(session: AsyncSessionDep):
+    """Get RBAC service instance."""
+    from app.modules.auth.rbac_service import RBACService
+    return RBACService(session)
+
+
+async def get_notification_service(session: AsyncSessionDep):
+    """Get notification service instance."""
+    from app.modules.auth.notification_service import NotificationService
+    return NotificationService(session)
+
+
 async def get_customer_repository(session: AsyncSessionDep):
     """Get customer repository instance."""
     from app.modules.customers.repository import CustomerRepository
@@ -400,4 +412,6 @@ __all__ = [
     "get_brand_service",
     "get_category_service",
     "get_location_service",
+    "get_rbac_service",
+    "get_notification_service",
 ]

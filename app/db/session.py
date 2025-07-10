@@ -1,6 +1,6 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool, QueuePool
+from sqlalchemy.pool import NullPool, AsyncAdaptedQueuePool
 from contextlib import asynccontextmanager
 import logging
 
@@ -20,7 +20,7 @@ def create_engine(database_url: str = None, echo: bool = None):
     Returns:
         AsyncEngine instance
     """
-    url = database_url or settings.DATABASE_URL
+    url = database_url or settings.get_database_url
     echo_sql = echo if echo is not None else settings.DATABASE_ECHO
     
     # Use NullPool for SQLite to avoid connection issues
@@ -29,9 +29,9 @@ def create_engine(database_url: str = None, echo: bool = None):
             "poolclass": NullPool,
         }
     else:
-        # Use QueuePool for other databases
+        # Use AsyncAdaptedQueuePool for other databases
         engine_args = {
-            "poolclass": QueuePool,
+            "poolclass": AsyncAdaptedQueuePool,
             "pool_size": settings.DATABASE_POOL_SIZE,
             "max_overflow": settings.DATABASE_MAX_OVERFLOW,
             "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
@@ -121,7 +121,7 @@ async def create_test_engine(database_url: str = None):
     Returns:
         AsyncEngine instance for testing
     """
-    url = database_url or settings.TEST_DATABASE_URL
+    url = database_url or settings.get_test_database_url
     return create_engine(url, echo=False)
 
 
@@ -239,9 +239,10 @@ async def check_db_connection():
         bool: True if connection successful
     """
     try:
+        from sqlalchemy import text
         async with AsyncSessionLocal() as session:
             # Execute a simple query
-            await session.execute("SELECT 1")
+            await session.execute(text("SELECT 1"))
             return True
     except Exception as e:
         logger.error(f"Database connection failed: {e}")

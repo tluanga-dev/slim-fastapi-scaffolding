@@ -43,7 +43,7 @@ class CacheMiddleware(BaseHTTPMiddleware):
             return False
         
         # Skip caching for certain paths
-        skip_paths = ["/health", "/metrics", "/docs", "/openapi.json"]
+        skip_paths = ["/health", "/metrics", "/docs", "/openapi.json", "/redoc"]
         if any(request.url.path.startswith(path) for path in skip_paths):
             return False
         
@@ -284,11 +284,9 @@ class CompressionMiddleware(BaseHTTPMiddleware):
         """Apply compression to response."""
         response = await call_next(request)
         
-        # Note: In production, you would implement actual gzip compression here
-        # This is a placeholder for compression logic
-        if self._should_compress(request, response):
-            response.headers["Content-Encoding"] = "gzip"
-            response.headers["Vary"] = "Accept-Encoding"
+        # Disable compression for now to avoid content encoding issues
+        # In production, you would implement actual gzip compression here
+        # For now, we'll just pass through without compression
         
         return response
 
@@ -303,7 +301,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "X-Frame-Options": "DENY",
             "X-XSS-Protection": "1; mode=block",
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-            "Content-Security-Policy": "default-src 'self'",
+            "Content-Security-Policy": (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "img-src 'self' data: https://fastapi.tiangolo.com; "
+                "font-src 'self' https://cdn.jsdelivr.net; "
+                "connect-src 'self'"
+            ),
             "Referrer-Policy": "strict-origin-when-cross-origin"
         }
     
@@ -318,6 +323,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class OpenAPIFixMiddleware(BaseHTTPMiddleware):
+    """Middleware to fix OpenAPI JSON response encoding issues."""
+    
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Fix OpenAPI JSON response encoding."""
+        response = await call_next(request)
+        
+        # For OpenAPI JSON endpoint, ensure no compression headers
+        if request.url.path == "/openapi.json":
+            # Remove any compression headers using proper method
+            if "content-encoding" in response.headers:
+                del response.headers["content-encoding"]
+            if "content-length" in response.headers:
+                del response.headers["content-length"]
+            # Ensure correct content type
+            response.headers["content-type"] = "application/json"
+        
+        return response
+
+
 # Middleware configuration
 def setup_middleware(app):
     """Setup all middleware for the application."""
@@ -327,6 +355,9 @@ def setup_middleware(app):
     # Security headers (outermost)
     app.add_middleware(SecurityHeadersMiddleware)
     
+    # OpenAPI fix middleware to prevent content encoding issues
+    app.add_middleware(OpenAPIFixMiddleware)
+    
     # Performance monitoring
     app.add_middleware(PerformanceMonitoringMiddleware)
     
@@ -334,12 +365,12 @@ def setup_middleware(app):
     if settings.REDIS_ENABLED:
         app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
     
-    # Compression
-    app.add_middleware(CompressionMiddleware)
+    # Compression disabled to avoid content encoding issues
+    # app.add_middleware(CompressionMiddleware)
     
-    # HTTP caching (innermost - closest to business logic)
-    if settings.REDIS_ENABLED:
-        app.add_middleware(CacheMiddleware, cache_ttl=settings.CACHE_TTL)
+    # HTTP caching disabled to avoid content encoding issues
+    # if settings.REDIS_ENABLED:
+    #     app.add_middleware(CacheMiddleware, cache_ttl=settings.CACHE_TTL)
 
 
 # Monitoring utilities

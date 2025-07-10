@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Rental Management API"
     
     # Database Settings
-    DATABASE_URL: str = "sqlite+aiosqlite:///./app.db"
+    DATABASE_URL: str = "postgresql+asyncpg://rental_user:rental_password@localhost:5432/rental_db"
     DATABASE_ECHO: bool = False
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
@@ -36,7 +36,28 @@ class Settings(BaseSettings):
     DATABASE_POOL_RECYCLE: int = 3600
     
     # Test Database
-    TEST_DATABASE_URL: str = "sqlite+aiosqlite:///./test.db"
+    TEST_DATABASE_URL: str = "postgresql+asyncpg://rental_user:rental_password@localhost:5432/rental_test_db"
+    
+    # Fallback SQLite URLs for local development without Docker
+    SQLITE_DATABASE_URL: str = "sqlite+aiosqlite:///./app.db"
+    SQLITE_TEST_DATABASE_URL: str = "sqlite+aiosqlite:///./test.db"
+    
+    # Database type selection
+    USE_SQLITE: bool = False  # Set to True to use SQLite instead of PostgreSQL
+    
+    @property
+    def get_database_url(self) -> str:
+        """Get the appropriate database URL based on configuration."""
+        if self.USE_SQLITE:
+            return self.SQLITE_DATABASE_URL
+        return self.DATABASE_URL
+    
+    @property
+    def get_test_database_url(self) -> str:
+        """Get the appropriate test database URL based on configuration."""
+        if self.USE_SQLITE:
+            return self.SQLITE_TEST_DATABASE_URL
+        return self.TEST_DATABASE_URL
     
     # Security Settings
     SECRET_KEY: str = "your-secret-key-here-change-in-production"

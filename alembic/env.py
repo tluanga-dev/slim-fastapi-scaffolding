@@ -24,7 +24,7 @@ from app.db.base import Base
 from app.modules.master_data.brands.models import Brand
 from app.modules.master_data.categories.models import Category
 from app.modules.master_data.locations.models import Location
-from app.modules.auth.models import User, Role, Permission
+from app.modules.auth.models import User, Role, Permission, PermissionCategory, PermissionDependency, RBACauditlog, NotificationPreference, PermissionNotification
 from app.modules.customers.models import Customer
 from app.modules.suppliers.models import Supplier
 
